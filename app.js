@@ -23,6 +23,10 @@ window.addEventListener("keydown", (e) => {
         config.multi = !config.multi
         addItem("system", "Long conversation checked: " + config.multi)
         break;
+      case "b":
+        e.preventDefault()
+        speechToText()
+        break;
 
       default:
         break;
@@ -108,11 +112,7 @@ function chat(reqMsgs) {
     let msg = data.choices[0].delta || data.choices[0].message || {}
     assistantElem.className = 'assistant'
     assistantElem.innerText += msg.content || ""
-  }, () => {
-    let msg = assistantElem.innerText
-    saveConv({ role: "assistant", content: msg })
-    textToSpeech(msg)
-  })
+  }, () => onSuccessed(assistantElem),)
 }
 function completions(reqMsgs) {
   let assistantElem = addItem('', '')
@@ -138,10 +138,14 @@ function completions(reqMsgs) {
   }, (data) => {
     assistantElem.className = 'assistant'
     assistantElem.innerText += data.choices[0].text
-  }, () => {
-    let msg = assistantElem.innerText
-    saveConv({ role: "assistant", content: msg })
-  })
+  }, () => onSuccessed(assistantElem),)
+}
+function onSuccessed(assistantElem) {
+  let msg = assistantElem.innerText
+  saveConv({ role: "assistant", content: msg })
+  if (config.tts) {
+    textToSpeech(msg)
+  }
 }
 function send(reqUrl, body, onMessage, scussionCall) {
   loader.hidden = false
@@ -159,7 +163,8 @@ function send(reqUrl, body, onMessage, scussionCall) {
       }
     }
   }
-  if (config.stream) {
+  if (!config.tts) {
+    body.stream = true
     var source = new SSE(
       reqUrl, {
       headers: {
@@ -189,6 +194,7 @@ function send(reqUrl, body, onMessage, scussionCall) {
 
     source.stream();
   } else {
+    body.stream = false
     fetch(reqUrl, {
       method: "POST",
       headers: {
@@ -217,6 +223,7 @@ function reset() {
 }
 
 const convKey = "conversations_"
+const convNameKey = "conversationName_"
 function saveConv(message) {
   messages.push(message)
   localStorage.setItem(`${convKey}${convId}`, JSON.stringify(messages))
@@ -233,10 +240,41 @@ function switchConv(key) {
     addItem(msg.role, msg.content)
   });
   convId = key.substring(convKey.length);
+  systemPromptInput.value = messages[0].content;
+  saveSettings();
 }
 
 function deleteConv(key) {
   localStorage.removeItem(key)
+}
+
+function deleteAllHistory() {
+  for (let index = 0; index < localStorage.length; index++) {
+    let key = localStorage.key(index);
+    if (key.substring(0, convKey.length) != convKey) { continue }
+    deleteConv(key)
+    showHistory(true)
+  }
+}
+
+function saveConvName(key) {
+  let input = document.getElementById(`input_${key}`)
+  localStorage.setItem(`${convNameKey}${key}`, input.value)
+  showHistory(true)
+}
+
+function updateConvName(key) {
+  let name = document.getElementById(`name_${key}`)
+  let input = document.getElementById(`input_${key}`)
+  let update = document.getElementById(`update_${key}`)
+  let del = document.getElementById(`delete_${key}`)
+  input.hidden = false
+  name.hidden = true
+  del.hidden = true
+  update.innerHTML = "📝"
+  update.onclick = () => {
+    saveConvName(key)
+  }
 }
 
 function showHistory(ok = true) {
@@ -253,13 +291,29 @@ function showHistory(ok = true) {
       } catch (error) {
         continue
       }
-      historyList.innerHTML += `<div class="history-item">
+      let itemName = localStorage.getItem(`${convNameKey}${key}`)
+      if (itemName) {
+        historyList.innerHTML += `<div class="history-item">
+      <div style="display: flex; align-items: center;">
+        <div id="name_${key}" style="flex: 1;" onclick='switchConv("${key}"); showHistory(false);'>${itemName} (${itemData.length}+)</div>
+        <input id="input_${key}" type="text" placeholder="会话名称" hidden />
+        <button id="update_${key}" onclick='updateConvName("${key}");' class="icon" title="Save conversation name">🔧</button>
+        <button id="delete_${key}" onclick='deleteConv("${key}"); showHistory(true);' class="icon" title="Delete">❌</button>
+      </div></div>`
+      } else {
+        historyList.innerHTML += `<div class="history-item">
+      <div style="display: flex; align-items: center; margin-bottom: 4px;">
+        <input id="input_${key}" type="text" placeholder="会话名称" />
+        <button onclick='saveConvName("${key}"); showHistory(true);' class="icon" title="Save conversation name">📝</button>
+      </div>
+      <div style="display: flex; align-items: center;">
         <div style="flex: 1;" onclick='switchConv("${key}"); showHistory(false);'>
-          <div>SYST: ${itemData[0].content}</div>
-          <div>USER: ${itemData[1].content} (${itemData.length}+)</div>
+          <div>SYST: ${itemData[0].content.replace(/<[^>]+>/g, '')}</div>
+          <div>USER: ${itemData[1].content.replace(/<[^>]+>/g, '')} (${itemData.length}+)</div>
         </div>
         <button onclick='deleteConv("${key}"); showHistory(true);' class="icon" title="Delete">❌</button>
-</div>`
+      </div></div>`
+      }
     }
     if (0 == localStorage.length) {
       historyList.innerHTML = `<h4>There are no past conversations yet.</h4>`
@@ -312,6 +366,8 @@ function setSettingInput(config) {
     systemPromptInput.value = config.firstPrompt.content
   }
   multiConvInput.checked = config.multi
+  ttsInput.checked = config.tts
+  whisperInput.checked = config.onlyWhisper
 }
 
 var config = {
@@ -324,6 +380,8 @@ var config = {
   stream: true,
   prompts: [],
   temperature: 0.5,
+  tts: false,
+  onlyWhisper: false,
 }
 function saveSettings() {
   if (!apiKeyInput.value) {
@@ -343,6 +401,8 @@ function saveSettings() {
   }
   messages[0] = config.firstPrompt
   config.multi = multiConvInput.checked
+  config.tts = ttsInput.checked
+  config.onlyWhisper = whisperInput.checked
   box.firstChild.innerHTML = config.firstPrompt.content
   localStorage.setItem("conversation_config", JSON.stringify(config))
   showSettings(false)
@@ -367,6 +427,13 @@ function init() {
     setSettingInput(config)
   } else {
     showSettings(true)
+  }
+  recogLangInput.value = navigator.language
+  if (!('speechSynthesis' in window)) {
+    ttsInput.disabled = false
+    ttsInput.onclick = () => {
+      alert("The current browser does not support text-to-speech");
+    }
   }
 
   fetch("./prompts.json").then(resp => {
@@ -401,20 +468,61 @@ const promptDiv = (index, prompt) => {
 </div>`
 }
 
-const synth = window.speechSynthesis;
-const textToSpeech = async (text, lang = 'zh-CN') => {
-  if ('speechSynthesis' in window) {
-    // Web Speech API 可用
-    const utterance = new SpeechSynthesisUtterance(text);
-    // utterance.lang = lang;
-    const voices = await getVoices();
-    const voice = voices.find(v => v.lang === lang);
-    utterance.voice = voice;
-    synth.speak(utterance);
-  } else {
-    // Web Speech API 不可用
-    alert("Your web Speech can't use")
+const textToSpeech = async (text, options = {}) => {
+  loader.hidden = false
+  const synth = window.speechSynthesis;
+
+  // Check if Web Speech API is available
+  if (!('speechSynthesis' in window)) {
+    loader.hidden = true
+    alert("The current browser does not support text-to-speech");
+    return;
   }
+
+  // Detect language using franc library
+  const { franc } = await import("https://cdn.jsdelivr.net/npm/franc@6.1.0/+esm");
+  let lang = franc(text);
+  if (lang === "" || lang === "und") {
+    lang = navigator.language
+  }
+  if (lang === "cmn") {
+    lang = "zh-CN"
+  }
+
+  // Get available voices and find the one that matches the detected language
+  const voices = await new Promise(resolve => {
+    const voices = synth.getVoices();
+    resolve(voices);
+  });
+  const voice = voices.find(v => langEq(v.lang, lang) && !v.localService);
+  if (!voice) {
+    voice = voices.find(v => langEq(v.lang, navigator.language) && !v.localService);
+  }
+
+  // Create a new SpeechSynthesisUtterance object and set its parameters
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.voice = voice;
+  utterance.rate = options.rate || 1.0;
+  utterance.pitch = options.pitch || 1.0;
+  utterance.volume = options.volume || 1.0;
+
+  // Speak the text
+  synth.speak(utterance);
+  utterance.addEventListener('boundary', (event) => {
+    const { charIndex, elapsedTime } = event;
+    const progress = charIndex / utterance.text.length;
+    // console.log(`当前朗读进度：${progress * 100}%, 时间：${elapsedTime}`);
+    loader.hidden = true
+  });
+};
+
+const regionNamesInEnglish = new Intl.DisplayNames(['en'], { type: 'language' });
+const langEq = (lang1, lang2) => {
+  let langStr1 = regionNamesInEnglish.of(lang1)
+  let langStr2 = regionNamesInEnglish.of(lang2)
+  if (langStr1.indexOf(langStr2) !== -1) return true
+  if (langStr2.indexOf(langStr1) !== -1) return true
+  return langStr1 === langStr2
 }
 
 const getVoices = () => {
@@ -423,5 +531,286 @@ const getVoices = () => {
       const voices = synth.getVoices();
       resolve(voices);
     };
+  });
+}
+
+var SpeechRecognition = SpeechRecognition || webkitSpeechRecognition
+// var SpeechGrammarList = SpeechGrammarList || window.webkitSpeechGrammarList
+// var SpeechRecognitionEvent = SpeechRecognitionEvent || webkitSpeechRecognitionEvent
+var recognition = null;
+const _speechToText = () => {
+  loader.hidden = false
+  // const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition || window.mozSpeechRecognition || window.msSpeechRecognition)();
+  if (!recognition) {
+    recognition = new SpeechRecognition();
+
+    recognition.continuous = false;
+    recognition.lang = recogLangInput.value;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      loader.hidden = true
+      try {
+        const speechResult = event.results[0][0].transcript;
+        line.innerText = speechResult;
+        // onSend()
+      } catch (error) {
+        addItem('system', `Speech recogniion result failed: ${error.message}`)
+      }
+    };
+
+    recognition.onspeechend = function () {
+      loader.hidden = true
+      recognition.stop();
+    };
+
+    recognition.onnomatch = function (event) {
+      loader.hidden = true
+      addItem('system', `Speech recogniion match failed: ${event.error}`)
+    }
+
+    recognition.onerror = (event) => {
+      loader.hidden = true
+      addItem('system', `Speech recogniion error: ${event.error}, ${event}`)
+    };
+  }
+
+  try {
+    recognition.start();
+  } catch (error) {
+    onError(`Speech error: ${error}`)
+  }
+}
+
+function _speechToText1() {
+  loader.hidden = false
+  // 获取音频流
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(function (stream) {
+      // 创建 MediaRecorder 对象
+      const mediaRecorder = new MediaRecorder(stream);
+      // 创建 AudioContext 对象
+      const audioContext = new AudioContext();
+      // 创建 MediaStreamAudioSourceNode 对象
+      const source = audioContext.createMediaStreamSource(stream);
+      // 创建 MediaStreamAudioDestinationNode 对象
+      const destination = audioContext.createMediaStreamDestination();
+      // 将 MediaStreamAudioDestinationNode 对象连接到 MediaStreamAudioSourceNode 对象
+      source.connect(destination);
+      // 将 MediaStreamAudioDestinationNode 对象的 MediaStream 传递给 MediaRecorder 对象
+      mediaRecorder.stream = destination.stream;
+      // 创建一个空的音频缓冲区
+      let chunks = [];
+      // 开始录音
+      mediaRecorder.start();
+      // 监听录音数据
+      mediaRecorder.addEventListener('dataavailable', function (event) {
+        chunks.push(event.data);
+      });
+      // 停止录音
+      mediaRecorder.addEventListener('stop', function () {
+        // 将录音数据合并为一个 Blob 对象
+        const blob = new Blob(chunks, { type: 'audio/mp3' });
+        // 创建一个 Audio 对象
+        const audio = new Audio();
+        // 将 Blob 对象转换为 URL
+        const url = URL.createObjectURL(blob);
+        // 设置 Audio 对象的 src 属性为 URL
+        audio.src = url;
+        // 播放录音
+        audio.play();
+        // asr
+        transcriptions(getRecordFile(chunks, mediaRecorder.mimeType))
+      });
+      // 5 秒后停止录音
+      setTimeout(function () {
+        mediaRecorder.stop();
+        stream.getTracks().forEach(track => track.stop());
+      }, 5000);
+    })
+    .catch(function (error) {
+      console.error(error);
+    });
+}
+
+const transcriptions = (file) => {
+  const formData = new FormData();
+  formData.append("model", "whisper-1");
+  formData.append("file", file);
+  formData.append("response_format", "json");
+  fetch(`${config.domain}/v1/audio/transcriptions`, {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + config.apiKey,
+    },
+    body: formData,
+  }).then((resp) => {
+    return resp.json()
+  }).then((data) => {
+    loader.hidden = true
+    if (data.error) {
+      throw new Error(`${data.error.code}: ${data.error.message}`)
+    }
+    line.innerText = data.text
+    line.focus()
+  }).catch(e => {
+    loader.hidden = true
+    addItem("system", e)
+  })
+}
+
+const getRecordFile = (chunks, mimeType) => {
+  const dataType = mimeType.split(';')[0];
+  const fileType = dataType.split('/')[1];
+  const blob = new Blob(chunks, { type: dataType });
+  const name = `input.${fileType}`
+  return new File([blob], name, { type: dataType })
+}
+
+const speechToText = () => {
+  loader.hidden = false
+  // 获取音频流
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(function (stream) {
+      // 创建 MediaRecorder 对象
+      const mediaRecorder = new MediaRecorder(stream);
+      // 创建 AudioContext 对象
+      const audioContext = new AudioContext();
+      // 创建 MediaStreamAudioSourceNode 对象
+      const source = audioContext.createMediaStreamSource(stream);
+      // 创建 MediaStreamAudioDestinationNode 对象
+      const destination = audioContext.createMediaStreamDestination();
+      // 将 MediaStreamAudioDestinationNode 对象连接到 MediaStreamAudioSourceNode 对象
+      source.connect(destination);
+      // 将 MediaStreamAudioDestinationNode 对象的 MediaStream 传递给 MediaRecorder 对象
+      mediaRecorder.stream = destination.stream;
+      // 创建一个空的音频缓冲区
+      let chunks = [];
+      // 开始录音
+      mediaRecorder.start();
+      // 监听录音数据
+      mediaRecorder.addEventListener('dataavailable', function (event) {
+        chunks.push(event.data);
+      });
+      // 停止录音
+      mediaRecorder.addEventListener('stop', function () {
+        console.log("stop record");
+        const audiofile = getRecordFile(chunks, mediaRecorder.mimeType)
+        // 将录音数据合并为一个 Blob 对象
+        // const blob = new Blob(chunks, { type: 'audio/mp3' });
+        // 创建一个 Audio 对象
+        const audio = new Audio();
+        // 将 Blob 对象转换为 URL
+        const url = URL.createObjectURL(audiofile);
+        // 设置 Audio 对象的 src 属性为 URL
+        audio.src = url;
+        // 播放录音
+        audio.play();
+        // 如果仅使用 Whisper 识别，则直接调用
+        if (config.onlyWhisper) {
+          transcriptions(audiofile)
+        }
+      });
+      if (config.onlyWhisper) {
+        detectStopRecording(stream, 0.38, () => {
+          if (mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+          stream.getTracks().forEach(track => track.stop());
+        })
+      } else {
+        asr(
+          onstop = () => {
+            addItem("system", `Stoped record: read ${chunks.length} "${mediaRecorder.mimeType}" blob, and start recognition`);
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+            stream.getTracks().forEach(track => track.stop());
+          },
+          onnomatch = () => {
+            transcriptions(getRecordFile(chunks, mediaRecorder.mimeType))
+          },
+          onerror = () => {
+            transcriptions(getRecordFile(chunks, mediaRecorder.mimeType))
+          })
+      }
+    })
+    .catch(function (error) {
+      console.error(error);
+      addItem("system", error);
+    });
+}
+
+const asr = (onstop, onnomatch, onerror) => {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+  const recognition = new SpeechRecognition()
+
+  recognition.continuous = false;
+  recognition.lang = recogLangInput.value;
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (event) => {
+    loader.hidden = true
+    try {
+      const speechResult = event.results[0][0].transcript;
+      line.innerText = speechResult;
+      // onSend()
+    } catch (error) {
+      addItem('system', `Speech recogniion result failed: ${error.message}`)
+    }
+  };
+
+  recognition.onspeechend = function () {
+    recognition.stop();
+    onstop();
+  };
+
+  recognition.onnomatch = onnomatch
+
+  recognition.onerror = onerror
+
+  try {
+    recognition.start();
+  } catch (error) {
+    onerror()
+  }
+}
+
+function detectStopRecording(stream, maxThreshold, callback) {
+  const audioContext = new AudioContext();
+  const sourceNode = audioContext.createMediaStreamSource(stream);
+  const analyzerNode = audioContext.createAnalyser();
+  analyzerNode.fftSize = 2048;
+  analyzerNode.smoothingTimeConstant = 0.8;
+  sourceNode.connect(analyzerNode);
+  const frequencyData = new Uint8Array(analyzerNode.frequencyBinCount);
+  var startTime = null;
+  const check = () => {
+    analyzerNode.getByteFrequencyData(frequencyData);
+    const amplitude = Math.max(...frequencyData) / 255;
+    console.log(`amplitude: ${amplitude}`);
+    if (amplitude >= maxThreshold) {
+      console.log("speeching");
+      startTime = new Date().getTime();
+      requestAnimationFrame(check);
+    } else if (startTime && (new Date().getTime() - startTime) > 1000) {
+      callback('stop');
+    } else {
+      console.log("no speech");
+      requestAnimationFrame(check);
+    }
+  };
+  requestAnimationFrame(check);
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').then(function (registration) {
+      console.log('ServiceWorker registration successful with scope: ', registration.scope);
+    }, function (err) {
+      console.error('ServiceWorker registration failed: ', err);
+    });
   });
 }
